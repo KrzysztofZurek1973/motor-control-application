@@ -17,6 +17,7 @@
 #include <fcntl.h>
 #include <strings.h>
 #include <stdint.h>
+#include <time.h>
 
 #include "morswin.h"
 #include "pulpit_zdalny.h"
@@ -31,14 +32,18 @@
 
 #define TIMER_PERIOD_MS 1
 #define MAIN_TIMER_PERIOD_S 5
-#define V_MAX 3000
-#define V_MIN 500
+#define V_MAX 2500		//maximum motort speed [rpm]
+#define V_MIN 300		//minimum motort speed [rpm]
+#define KEY_STEP 100	//keyboard increment/decrement speed step [rpm]
 #define DISPLAY_PERIOD_S 2
 #define RC_PERIOD_MS 10
 #define MODBUS_MAX_ADDR 8
+#define BAUDRATE B57600
+#define UART_PORT "/dev/ttyUSB0"
 
 char help_str[] =	"Motor Controller Application\n"\
-					"version 2022-05-10\n\n	"\
+					"version 2022-08-08\n\n	"\
+					"run: ./mca\n"\
 					"options:\n"\
 					"\t-r - read\n"\
 					"\t-w - write\n"\
@@ -50,7 +55,7 @@ char help_str[] =	"Motor Controller Application\n"\
 					"\t-o - activate nBOOT1 bit (1), deactivate (0)\n"\
 					"\t-h - this help\n"\
 					"examples:\n"\
-					"\t-a 1          communication only with CTRL 	address 1\n"\
+					"\t-a 1          communication only with CTRL address 1\n"\
 					"\t-r -a 0       read Modbus address\n"\
 					"\t-r -a 1 -s 0  read serial number\n"\
 					"\t-w -a 0       reset Modbus address (set as 0)\n"\
@@ -66,7 +71,7 @@ uint8_t modbus_addr = MODBUS_MAX_ADDR + 1;
 TModoWKBP ModoWKBP;
 TModoPG ModoPG;
 int32_t p_poziom, p_pion = 0;
-bool finish_app = false;
+bool finish_app;
 pthread_t p_keyboard_thread, p_mc_thread, rc_thread;
 uint32_t main_loop_cnt = 0;
 uint8_t ipnna = 0;
@@ -77,6 +82,8 @@ int16_t pednik_man[4];
 int16_t current_speed = 0;
 uint32_t recv_bytes = 0;
 uint32_t motor_cnt = 0;
+bool keyboard_activated = false;
+uint32_t test_cnt = 0;
 
 //for test only
 pthread_t p_display_param_thread;
@@ -90,9 +97,6 @@ void *keyboard_thread_fun(void *arg);
 void *pedniki_func(void *arg);
 void *remote_console_fun(void *arg);
 
-int NadajAdresSilnika(int32_t uchwyt_portu,
-					uint8_t adres_sterownika,
-					uint8_t timeout);
 int32_t Silnik(int32_t uchwyt_portu,
 			uint8_t adres_sterownika,
 			int16_t predkosc,
@@ -223,19 +227,20 @@ int main(int argc, char *argv[]) {
 				crc_calc = crc_modbus(buff, 2);
 				buff[2] = crc_calc;
 				buff[3] = crc_calc >> 8;
-				uart_fd = open_uart_port("/dev/ttyUSB0", B57600, 20, 5);
-				tcflush(uart_fd, TCIOFLUSH);
-				write(uart_fd, buff, 4);
-				//wait for address
-				//nanosleep(&t_req, &t_rem);
-				res = read(uart_fd, buff, 5);
-				close(uart_fd);
-
-				if (res == 5){
-					printf("current addres: %i\n", buff[0]);
-				}
-				else{
-					printf("Address reading ERROR: response not correct, %i, 0x%02x\n", res, buff[0]);
+				uart_fd = open_uart_port(UART_PORT, BAUDRATE, 20, 5);
+				if (uart_fd > 0){
+					tcflush(uart_fd, TCIOFLUSH);
+					write(uart_fd, buff, 4);
+					//wait for address
+					//nanosleep(&t_req, &t_rem);
+					res = read(uart_fd, buff, 5);
+					close(uart_fd);
+					if (res == 5){
+						printf("current address: %i\n", buff[0]);
+					}
+					else{
+						printf("Address reading ERROR: response not correct, %i, 0x%02x\n", res, buff[0]);
+					}
 				}
 			}
 			else if (set_serial == true){
@@ -245,26 +250,29 @@ int main(int argc, char *argv[]) {
 				crc_calc = crc_modbus(buff, 2);
 				buff[2] = crc_calc;
 				buff[3] = crc_calc >> 8;
-				uart_fd = open_uart_port("/dev/ttyUSB0", B57600, 20, 6);
-				tcflush(uart_fd, TCIOFLUSH);
-				write(uart_fd, buff, 4);
-				//wait for answer
-				res = read(uart_fd, buff, 8);
-				if (res == 6){
-					crc_calc = crc_modbus(buff, 4);
-					crc_recv = (uint16_t)buff[4] + (uint16_t)(buff[5]*256);
-					if (crc_calc == crc_recv){
-						uint16_t sn = (uint16_t)buff[2] + (uint16_t)(buff[3]*256 );
-						printf("Current serial number: %i\n", sn);
+				uart_fd = open_uart_port(UART_PORT, BAUDRATE, 20, 6);
+				if (uart_fd > 0){
+					tcflush(uart_fd, TCIOFLUSH);
+					write(uart_fd, buff, 4);
+					//wait for answer
+					memset(buff, 0, 32);
+					res = read(uart_fd, buff, 6);
+					if (res == 6){
+						crc_calc = crc_modbus(buff, 4);
+						crc_recv = (uint16_t)buff[4] + (uint16_t)(buff[5]*256);
+						if (crc_calc == crc_recv){
+							uint16_t sn = (uint16_t)buff[2] + (uint16_t)(buff[3]*256 );
+							printf("Current serial number: %i\n", sn);
+						}
+						else{
+							printf("Read SN CRC error\n");
+						}
 					}
 					else{
-						printf("Read SN CRC error\n");
+						printf("Read SN error: answer length NOT ok, %i\n", res);
 					}
+					close(uart_fd);
 				}
-				else{
-					printf("Read SN error: answer length NOT ok\n");
-				}
-				close(uart_fd);
 			}
 			else{
 				printf("read option not correct\n");
@@ -283,35 +291,37 @@ int main(int argc, char *argv[]) {
 				crc_calc = crc_modbus(buff, 3);
 				buff[3] = crc_calc;
 				buff[4] = crc_calc >> 8;
-				uart_fd = open_uart_port("/dev/ttyUSB0", B57600, 20, 5);
-				tcflush(uart_fd, TCIOFLUSH);
-				write(uart_fd, buff, 5);
-				//wait for the current address
-				tcflush(uart_fd, TCIOFLUSH);
-				res = read(uart_fd, buff, 24);
-				if (res == 5){
-					crc_calc = crc_modbus(buff, 3);
-					crc_recv = (uint16_t)buff[3] + (uint16_t)(buff[4]*256 );
-					if (crc_calc == crc_recv){
-						//new address only for zero address node
-						buff[0] = 0;
-						buff[1] = 0x41;
-						buff[2] = modbus_addr;
+				uart_fd = open_uart_port(UART_PORT, BAUDRATE, 20, 5);
+				if (uart_fd > 0){
+					tcflush(uart_fd, TCIOFLUSH);
+					write(uart_fd, buff, 5);
+					//wait for the current address
+					tcflush(uart_fd, TCIOFLUSH);
+					res = read(uart_fd, buff, 24);
+					if (res == 5){
 						crc_calc = crc_modbus(buff, 3);
-						buff[3] = crc_calc;
-						buff[4] = crc_calc >> 8;
-						tcflush(uart_fd, TCIOFLUSH);
-						write(uart_fd, buff, 5);
-						printf("New address sent: %i\n", modbus_addr);
+						crc_recv = (uint16_t)buff[3] + (uint16_t)(buff[4]*256 );
+						if (crc_calc == crc_recv){
+							//new address only for zero address node
+							buff[0] = 0;
+							buff[1] = 0x41;
+							buff[2] = modbus_addr;
+							crc_calc = crc_modbus(buff, 3);
+							buff[3] = crc_calc;
+							buff[4] = crc_calc >> 8;
+							tcflush(uart_fd, TCIOFLUSH);
+							write(uart_fd, buff, 5);
+							printf("New address sent: %i\n", modbus_addr);
+						}
+						else{
+							printf("New addres error, %i\n", res);
+						}
 					}
 					else{
-						printf("New addres error, %i\n", res);
+						printf("Set address failed: wrong answer, %i\n", res);
 					}
+					close(uart_fd);
 				}
-				else{
-					printf("Set address failed: wrong answer, %i\n", res);
-				}
-				close(uart_fd);
 			}
 			else if (set_serial == true){
 				printf("write new serial number\n");
@@ -322,57 +332,43 @@ int main(int argc, char *argv[]) {
 				crc_calc = crc_modbus(buff, 4);
 				buff[4] = crc_calc;
 				buff[5] = crc_calc >> 8;
-				uart_fd = open_uart_port("/dev/ttyUSB0", B57600, 20, 6);
-				tcflush(uart_fd, TCIOFLUSH);
-				write(uart_fd, buff, 6);
-				//wait for answer
-				res = read(uart_fd, buff, 6);
-				if (res == 6){
-					crc_calc = crc_modbus(buff, 4);
-					crc_recv = (uint16_t)buff[4] + (uint16_t)(buff[5]*256);
-					if (crc_calc == crc_recv){
-						uint16_t nsn = (uint16_t)buff[2] + (uint16_t)(buff[3]*256);
-						if (nsn == new_serial_number){
-							printf("New serial number: %i\n", nsn);
+				uart_fd = open_uart_port(UART_PORT, BAUDRATE, 20, 6);
+				if (uart_fd > 0){
+					tcflush(uart_fd, TCIOFLUSH);
+					write(uart_fd, buff, 6);
+					//wait for answer
+					res = read(uart_fd, buff, 6);
+					if (res == 6){
+						crc_calc = crc_modbus(buff, 4);
+						crc_recv = (uint16_t)buff[4] + (uint16_t)(buff[5]*256);
+						if (crc_calc == crc_recv){
+							uint16_t nsn = (uint16_t)buff[2] + (uint16_t)(buff[3]*256);
+							if (nsn == new_serial_number){
+								printf("New serial number: %i\n", nsn);
+							}
+							else{
+								printf("Serial number NOT set\n");
+							}
 						}
 						else{
-							printf("Serial number NOT set\n");
+							printf("Read SN CRC error\n");
 						}
 					}
 					else{
-						printf("Read SN CRC error\n");
+						printf("Read SN error: answer length NOT ok, %i\n", res);
 					}
+					close(uart_fd);
 				}
-				else{
-					printf("Read SN error: answer length NOT ok, %i\n", res);
-				}
-				close(uart_fd);
 			}
 			else if (set_new_speed == true){
-				printf("Set new speed\n");
-				if (modbus_addr > 8){
-					buff[0] = 0xFF;
-				}
-				else{
-					buff[0] = modbus_addr;
-				}
-				buff[1] = 0x01;
-				buff[2] = 0;
-				buff[3] = new_speed;
-				buff[4] = new_speed >> 8;
-				crc_calc = crc_modbus(buff, 5);
-				buff[5] = crc_calc;
-				buff[6] = crc_calc >> 8;
-				uart_fd = open_uart_port("/dev/ttyUSB0", B57600, 20, 19);
-				tcflush(uart_fd, TCIOFLUSH);
-				t_req.tv_sec = 0;
-				t_req.tv_nsec = 100 * 1000000;
-				while (1){
-					tcflush(uart_fd, TCIOFLUSH);
-					write(uart_fd, buff, 7);
-					nanosleep(&t_req, &t_rem);
-				}
-				close(uart_fd);
+				printf("Set speed: %i rpm\n", new_speed);
+				pednik_mar[0] = new_speed;
+				pednik_mar[1] = new_speed;
+				pednik_mar[2] = new_speed;
+				pednik_mar[3] = new_speed;
+				//avoid reading radio console
+				keyboard_activated = true;
+				goto main_app;
 			}
 			else{
 				printf("unknown write option\n");
@@ -385,11 +381,13 @@ int main(int argc, char *argv[]) {
 				crc_calc = crc_modbus(buff, 2);
 				buff[2] = crc_calc;
 				buff[3] = crc_calc >> 8;
-				uart_fd = open_uart_port("/dev/ttyUSB0", B57600, 20, 4);
-				tcflush(uart_fd, TCIOFLUSH);
-				write(uart_fd, buff, 4);
-				close(uart_fd);
-				printf("Diodes test\n");
+				uart_fd = open_uart_port(UART_PORT, BAUDRATE, 20, 4);
+				if (uart_fd > 0){
+					tcflush(uart_fd, TCIOFLUSH);
+					write(uart_fd, buff, 4);
+					close(uart_fd);
+					printf("Diodes test\n");
+				}
 			}
 			else if (bootloader_run == true){
 				//start bootloader
@@ -398,11 +396,13 @@ int main(int argc, char *argv[]) {
 				crc_calc = crc_modbus(buff, 2);
 				buff[2] = crc_calc;
 				buff[3] = crc_calc >> 8;
-				uart_fd = open_uart_port("/dev/ttyUSB0", B57600, 20, 4);
-				tcflush(uart_fd, TCIOFLUSH);
-				write(uart_fd, buff, 4);
-				close(uart_fd);
-				printf("Start bootloader\n");
+				uart_fd = open_uart_port(UART_PORT, BAUDRATE, 20, 4);
+				if (uart_fd > 0){
+					tcflush(uart_fd, TCIOFLUSH);
+					write(uart_fd, buff, 4);
+					close(uart_fd);
+					printf("Start bootloader\n");
+				}
 			}
 			else if (set_boot_bit == true){
 				//set nBoot1 in option bytes
@@ -417,31 +417,34 @@ int main(int argc, char *argv[]) {
 				crc_calc = crc_modbus(buff, 3);
 				buff[3] = crc_calc;
 				buff[4] = crc_calc >> 8;
-				uart_fd = open_uart_port("/dev/ttyUSB0", B57600, 20, 5);
-				tcflush(uart_fd, TCIOFLUSH);
-				write(uart_fd, buff, 5);
-				//close(uart_fd);
-				printf("Setting nBoot1 bit in \"Option Bytes\"\n");
-				//wait for answer
-				res = read(uart_fd, buff, 5);
-				if (res == 5){
-					crc_calc = crc_modbus(buff, 2);
-					crc_recv = (uint16_t)buff[3] + (uint16_t)(buff[4]*256);
-					if (crc_calc == crc_recv){
-						printf("Success, bit set\n");
+				uart_fd = open_uart_port(UART_PORT, BAUDRATE, 20, 5);
+				if (uart_fd > 0){
+					tcflush(uart_fd, TCIOFLUSH);
+					write(uart_fd, buff, 5);
+					//close(uart_fd);
+					printf("Setting nBoot1 bit in \"Option Bytes\"\n");
+					//wait for answer
+					res = read(uart_fd, buff, 5);
+					if (res == 5){
+						crc_calc = crc_modbus(buff, 2);
+						crc_recv = (uint16_t)buff[3] + (uint16_t)(buff[4]*256);
+						if (crc_calc == crc_recv){
+							printf("Success, bit set\n");
+						}
 					}
+					else{
+						printf("Answer error, %i\n", res);
+					}
+					close(uart_fd);
 				}
-				else{
-					printf("Answer error, %i\n", res);
-				}
-				close(uart_fd);
 			}
 		}
+		printf("EXIT\n");
 		exit(EXIT_SUCCESS);
 	}
 
-	init_pulpit_zdalny("/dev/ttyS0", B9600);
-
+main_app:
+	finish_app = false;
 	//create motor controller writer
 	int pmc = pthread_create(&p_mc_thread,
 							NULL,
@@ -449,36 +452,48 @@ int main(int argc, char *argv[]) {
 							NULL);
 	if (pmc != 0){
 		printf("Motor controller writer thread NOT created\n");
-		return -1;
-	}
-	//create keyboard reader
-	int pkey = pthread_create(&p_keyboard_thread,
-							NULL,
-							keyboard_thread_fun,
-							NULL);
-	if (pkey != 0){
-		printf("Keyboard reader thread NOT created\n");
-		return -1;
+		finish_app = true;
 	}
 
+	init_pulpit_zdalny("/dev/ttyS0", B9600);
+
+	//if (pz < 0){
+		//create keyboard reader
+		int pkey = pthread_create(&p_keyboard_thread,
+								NULL,
+								keyboard_thread_fun,
+								NULL);
+		if (pkey != 0){
+			printf("Keyboard reader thread NOT created\n");
+			finish_app = true;
+		}
+	//}
+	//else{
+	//	printf("Keyboard reader is OFF\n");
+	//}
+
 	//create display writer thread
-	int pdisp = pthread_create(&p_display_param_thread,
-							NULL,
-							display_param_fun,
-							NULL);
-	if (pdisp != 0){
-		printf("Parameter display thread NOT created\n");
-		return -1;
+	if (finish_app == false){
+		int pdisp = pthread_create(&p_display_param_thread,
+								NULL,
+								display_param_fun,
+								NULL);
+		if (pdisp != 0){
+			printf("Parameter display thread NOT created\n");
+			finish_app = true;
+		}
 	}
 
 	//create remote console reader
-	int pdrc = pthread_create(&rc_thread,
-							NULL,
-							remote_console_fun,
-							NULL);
-	if (pdrc != 0){
-		printf("RC thread NOT created\n");
-		return -1;
+	if (finish_app == false){
+		int pdrc = pthread_create(&rc_thread,
+								NULL,
+								remote_console_fun,
+								NULL);
+		if (pdrc != 0){
+			printf("RC thread NOT created\n");
+			finish_app = true;
+		}
 	}
 
 	t_req.tv_sec = MAIN_TIMER_PERIOD_S;
@@ -489,6 +504,7 @@ int main(int argc, char *argv[]) {
 		//printf("%i\n", main_loop_cnt++);
 	}
 	printf("EXIT\n");
+	exit(EXIT_SUCCESS);
 }
 
 
@@ -509,9 +525,10 @@ void *pedniki_func(void *arg){
 	//unsigned char i;
 	int lor[4]= {0,0,0,0};			//liczba odebranych ramek
 	//int uart_fd = -1;
-	uart_fd = open_uart_port("/dev/ttyUSB0", B57600, 0, 0);
+	uart_fd = open_uart_port(UART_PORT, BAUDRATE, 0, 0);
 	if (uart_fd < 0){
-		return NULL;
+		printf("Communication with motor not possible\nUART open failed\n");
+		exit(1);
 	}
 	//p_pion = uart_fd;
 	p_poziom = uart_fd;
@@ -532,25 +549,6 @@ void *pedniki_func(void *arg){
 		memcpy((void*)&ModoPG.manewrowy, (const void*)pion_lok, 4 * sizeof(TodSilnik));
 		//pthread_mutex_unlock(&muteks);
 
-		if ((ModoWKBP.Niespr[1] & 0x01) && (ipnna < 3)){
-			NadajAdresSilnika(p_poziom,1,7);
-			ipnna++;
-		}
-		if ((ModoWKBP.Niespr[1] & 0x02) && ipnna < 3){
-			NadajAdresSilnika(p_poziom,2,7);
-			ipnna++;
-		}
-		if ((ModoWKBP.Niespr[1] & 0x04) && ipnna < 3){
-			NadajAdresSilnika(p_poziom,3,7);
-			ipnna++;
-		}
-		if ((ModoWKBP.Niespr[1] & 0x08) && ipnna < 3){
-			NadajAdresSilnika(p_poziom,4,7);
-			ipnna++;
-		}
-		//if ((motor_cnt % 100) == 0){
-		//	printf("%i, V poz: %i\n", motor_cnt, pednik_poz[0]);
-		//}
 		if (modbus_addr <= MODBUS_MAX_ADDR){
 			if (Silnik(p_poziom,
 						modbus_addr,
@@ -695,55 +693,6 @@ int32_t Silnik(int32_t uchwyt_portu,
 
 /**
  *
- * Set new address for motor controller
- *
- */
-int NadajAdresSilnika(int32_t uchwyt_portu,
-					uint8_t adres_sterownika,
-					uint8_t timeout){
-
-	//int const maska = TIOCM_RTS;	//do zmiany sygnalu RTS
-	int lsr;
-	unsigned char crc_hi, crc_lo;
-	unsigned char buf_out[10];
-	unsigned char od_siln[150];
-	short il_zn = 0;
-	//TodSilnik sui;
-	struct timespec t_req, t_rem;
-
-	buf_out[0] = 0x00;	//dotychczasowy adres sterownika (zawsze 0)
-	buf_out[1] = 0x10;	//kod funkcji
-	buf_out[2] = adres_sterownika;	//nowy adres sterownika
-	CRC16(buf_out, 3, &buf_out[4], &buf_out[3]);
-	write(uchwyt_portu, buf_out, 5);
-
-	do ioctl(uchwyt_portu,TIOCSERGETLSR,&lsr); //czekanie na wyslanie znaku
-	while (!(lsr&TIOCSER_TEMT));
-	//ioctl(uchwyt_portu,TIOCMBIC,&maska);	//wlaczenie nasluchu z RS-485
-
-	il_zn = CzekajNaZnaki(uchwyt_portu, adres_sterownika, 4, timeout, od_siln);
-
-	if (il_zn >= 4) {		//na pełną odpowiedź sterownik potrzebuje min. 6 ms
-		CRC16(od_siln, 2, &crc_hi, &crc_lo);
-		if (crc_hi == od_siln[3] && crc_lo == od_siln[2]) {
-			printf("New Addres OK: %d\n", adres_sterownika);
-		} else printf("New Addres FAILED: %d\n",adres_sterownika);
-	}
-	else{
-		printf("New addres procedure error: %d\n",adres_sterownika);
-	}
-
-	//RS485_DELAY_AFTER_TRANSFER;
-	t_req.tv_sec = 0;
-	t_req.tv_nsec = 1000000;
-	nanosleep(&t_req, &t_rem);
-
-	return 1;
-}
-
-
-/**
- *
  * Read response data from motor controller
  *
  */
@@ -812,25 +761,37 @@ void *remote_console_fun(void *arg){
 	t_req.tv_nsec = RC_PERIOD_MS * 1000000;
 	while(1){
 		nanosleep(&t_req, &t_rem);
-		get_pulpit_zdalny(&p_zdal);
-		if (p_zdal.joy_prawy_y > 3){
-			v = 28 * p_zdal.joy_prawy_y + 417;
+		if (keyboard_activated == false){
+			//printf("%i, read p_zdal\n", test_cnt++);
+			if (pulpit_zdalny_is_alive() == true){
+				get_pulpit_zdalny(&p_zdal);
+				if (p_zdal.joy_prawy_y > 3){
+					//v = 28 * p_zdal.joy_prawy_y + 417;
+					v = 24 * p_zdal.joy_prawy_y + 260;
+				}
+				else if (p_zdal.joy_prawy_y < -3){
+					//v = 28 * p_zdal.joy_prawy_y - 417;
+					v = 24 * p_zdal.joy_prawy_y - 260;
+				}
+				else{
+					v = 0;
+				}
+	
+				if (v > V_MAX){
+					v = V_MAX;
+				}
+				else if (v < -V_MAX){
+					v = -V_MAX;
+				}
+			}
+			else{
+				v = 0;
+			}
+			pednik_mar[0] = v;
+			pednik_mar[1] = v;
+			pednik_mar[2] = v;
+			pednik_mar[3] = v;
 		}
-		else if (p_zdal.joy_prawy_y < -3){
-			v = 28 * p_zdal.joy_prawy_y - 417;
-		}
-		else{
-			v = 0;
-		}
-
-		if (v > V_MAX){
-			v = V_MAX;
-		}
-		else if (v < -V_MAX){
-			v = -V_MAX;
-		}
-
-		pednik_mar[0] = v;
 		//printf("x: %i, y: %i, v: %i\n",
 		//		p_zdal.joy_prawy_x, p_zdal.joy_prawy_y, v);
 	}
@@ -850,6 +811,7 @@ void *remote_console_fun(void *arg){
 void *keyboard_thread_fun(void *arg){
 	int c = 0x30, step = 0;
 	static struct termios oldt, newt;
+	short v_temp = 0;
 
 	arg = arg;
 
@@ -874,64 +836,52 @@ void *keyboard_thread_fun(void *arg){
 			}
 			else if ((step == 2) && (c == 0x41)){
 				//arrow UP pressed
-				//printf("UP\n");
 				step = 0;
 				if (pednik_mar[0] == 0){
-					pednik_mar[0] = V_MIN;
-					pednik_mar[1] = V_MIN;
-					pednik_mar[2] = V_MIN;
-					pednik_mar[3] = V_MIN;
-				}
-				else if (pednik_mar[0] == -V_MIN){
-					pednik_mar[0] = 0;
-					pednik_mar[1] = 0;
-					pednik_mar[2] = 0;
-					pednik_mar[3] = 0;
+					v_temp = V_MIN;
+					keyboard_activated = true;
 				}
 				else {
-					pednik_mar[0] += 100;
-					pednik_mar[1] += 100;
-					pednik_mar[2] += 100;
-					pednik_mar[3] += 100;
+					v_temp = pednik_mar[0] + 100;
 				}
 				//check max velocity
-				if (pednik_mar[0] > V_MAX){
-					pednik_mar[0] = V_MAX;
-					pednik_mar[1] = V_MAX;
-					pednik_mar[2] = V_MAX;
-					pednik_mar[3] = V_MAX;
+				if (pednik_mar[0] >= V_MAX){
+					v_temp = V_MAX;
+				}
+				else if (abs(v_temp) < V_MIN){
+					v_temp = 0;
+					keyboard_activated = false;
 				}
 				//printf("Current speed: %i\n", pednik_mar[0]);
+				pednik_mar[0] = v_temp;
+				pednik_mar[1] = v_temp;
+				pednik_mar[2] = v_temp;
+				pednik_mar[3] = v_temp;
+				//printf("%i, UP, %i\n", test_cnt++, v_temp);
 			}
 			else if ((step == 2) && (c == 0x42)){
 				//arrow DOWN pressed
-				//printf("DOWN\n");
 				step = 0;
 				if (pednik_mar[0] == 0){
-					pednik_mar[0] = -V_MIN;
-					pednik_mar[1] = -V_MIN;
-					pednik_mar[2] = -V_MIN;
-					pednik_mar[3] = -V_MIN;
-				}
-				else if (pednik_mar[0] == V_MIN){
-					pednik_mar[0] = 0;
-					pednik_mar[1] = 0;
-					pednik_mar[2] = 0;
-					pednik_mar[3] = 0;
+					v_temp = -V_MIN;
+					keyboard_activated = true;
 				}
 				else {
-					pednik_mar[0] -= 100;
-					pednik_mar[1] -= 100;
-					pednik_mar[2] -= 100;
-					pednik_mar[3] -= 100;
+					v_temp = pednik_mar[0] - 100;
 				}
 				//check max velocity
-				if (pednik_mar[0] < -V_MAX){
-					pednik_mar[0] = -V_MAX;
-					pednik_mar[1] = -V_MAX;
-					pednik_mar[2] = -V_MAX;
-					pednik_mar[3] = -V_MAX;
+				if (pednik_mar[0] <= -V_MAX){
+					v_temp = -V_MAX;
 				}
+				else if (abs(v_temp) < V_MIN){
+					v_temp = 0;
+					keyboard_activated = false;
+				}
+				pednik_mar[0] = v_temp;
+				pednik_mar[1] = v_temp;
+				pednik_mar[2] = v_temp;
+				pednik_mar[3] = v_temp;
+				//printf("%i, DOWN, %i\n", test_cnt++, v_temp);
 				//printf("Current speed: %i\n", pednik_mar[0]);
 			}
 			else {
@@ -972,15 +922,19 @@ void *display_param_fun(void *arg){
 	t_req.tv_nsec = 0;
 	while(1) {
 		nanosleep(&t_req, &t_rem);
-		printf("%5i| V: %4i; U: %4.2f; I: %4i; Tm: %d; Ts: %d; p: %d; err: 0x%02X\n",
+		printf("%5i| Vz: %4i, V: %4i; U: %4.2f; I: %4i; Tm: %d; Ts: %d; p: %d; err: 0x%02X\n",
 				disp_cnt++,
+				pednik_mar[0],
 				poziom_glob[i].pred,
-				(float)((float)poziom_glob[i].nap)/1000,
+				(float)((float)poziom_glob[i].nap),
 				poziom_glob[i].prad,
 				poziom_glob[i].temp_modul,
 				poziom_glob[i].temp_siln,
 				poziom_glob[i].cisnienie,
 				poziom_glob[i].bledy);
+		if (poziom_glob[i].temp_modul >= 70){
+			printf("--- WYSOKA TEMPERATURA! ---\n");
+		}
 	}
 
 }

@@ -1,7 +1,7 @@
 CC = gcc
 CFLAGS = -g -Wall -Wextra -pthread
 BUILD = build
-TARGET = test-speed
+TARGET = mca
 FILES = $(wildcard *.c)
 OBJS = $(patsubst %.c, $(BUILD)/%.o, $(FILES))
 DEPS = $(wildcard *.h)
@@ -14,7 +14,7 @@ all: $(OBJS)
 #	@echo $@
 #	@echo $<
 	$(CC) $^ $(CFLAGS) $(CLIBS) -o $(TARGET)
-	@echo "\nDone"
+	@echo "\nSuccess"
 
 #compile files in main directory
 $(BUILD)/%.o: %.c $(DEPS)

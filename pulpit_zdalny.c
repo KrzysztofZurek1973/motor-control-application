@@ -234,7 +234,6 @@ void *pulpit_zdalny_recv_fun(void *arg){
 					else if (p_zdal.joy_prawy_y < 32) {
 						p_zdal.joy_prawy_y = (32 - p_zdal.joy_prawy_y) * 3;
 					}
-
 					//przyciski i przełączniki
 					if (buff[15] & 0x04){
 						p_zdal.Cofnij = 1;
