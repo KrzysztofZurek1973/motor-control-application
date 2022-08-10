@@ -569,6 +569,8 @@ typedef struct {
 	unsigned char  AHRS_err:1;
 	unsigned char  keller_err:1;	
 } TMSdostepnosc;
+				
+void *pedniki_func(void *arg);
 
 
 void timer_18ms(void);
