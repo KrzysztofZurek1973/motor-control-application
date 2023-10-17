@@ -4,8 +4,6 @@
 
 ## version 2022-08-10 ##
 
-### Gdansk University of Technology ###
-
 #### Krzysztof Zurek ####
 
 -------------------------------------------------------
