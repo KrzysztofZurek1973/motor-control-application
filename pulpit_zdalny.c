@@ -1,5 +1,6 @@
 #include <stdio.h>
 #include <unistd.h>
+#include <stdlib.h>
 #include <fcntl.h>
 #include <termios.h>
 #include <errno.h>
@@ -37,6 +38,11 @@ void *pulpit_zdalny_timer_fun(void *arg);
  */
 int init_pulpit_zdalny(char *dev, int baudrate){
 	struct termios newtio;
+	
+	if (dev == NULL){
+		printf("Pulpit zdalnu: serial port is NULL\n");
+		exit(EXIT_FAILURE);
+	}
 
 	memset(&p_zdal_data, 0, sizeof(p_zdal_data));
 	pulpit_zdalny_handle = open(dev, O_RDWR | O_NOCTTY);
@@ -291,25 +297,3 @@ void *pulpit_zdalny_recv_fun(void *arg){
 		} //if(res == 36)
 	}//for
 }
-
-/*
-//CRC calculation
-//code received from IREL (2021-12-20)
-uint16_t calc_crc(uint8_t *b, uint8_t len){
-	uint16_t crc;
-	crc = 0xffff;
-	while(len--) {
-		crc = _crc_ccitt_update(crc, *b++);
-	}
-	return crc;
-}
-
-
-uint32_t _crc_ccitt_update (uint32_t crc, uint8_t data){
-	data ^= (uint8_t)(crc & 0xff);
-	data ^= data << 4;
-
-	return ((((uint32_t)data << 8) | (crc >> 8)) ^ (uint32_t)(data >> 4)
-                ^ ((uint32_t)data << 3));
-}
-*/

@@ -3,6 +3,7 @@
 #include <termios.h>
 #include <fcntl.h>
 #include <strings.h>
+#include <assert.h>
 /**
  *
  * Open UART port
@@ -15,7 +16,7 @@ int open_uart_port(char *dev, int baudrate, int vtime, int bytes){
 	//open and configure serial port
 	fd = open(dev, O_RDWR | O_NOCTTY);
 	if (fd < 0){
-		printf("UART port open failed\n");
+		printf("UART %s open failed, %i\n", dev, fd);
 		//finish_app = true;
 		return -1;
 	}
